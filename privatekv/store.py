@@ -2,6 +2,8 @@
 
 import pickle
 
+import paramiko
+
 from pyoram.oblivious_storage.tree.path_oram import PathORAM
 
 class KeyNotFoundError(Exception):
@@ -58,3 +60,42 @@ class KVORAM(object):
             return pickle.loads(data)
         except pickle.UnpicklingError as e:
             raise KeyNotFoundError(key) from e
+
+    def close(self):
+        self.oram.close()
+        storename = self.oram._oram.storage_heap.storage_name
+        keyfile_name = "%s.key" % (storename)
+        stashfile_name = "%s.stash" % (storename)
+        positionfile_name = "%s.position" % (storename)
+
+        with open(keyfile_name, "wb") as keyfile:
+            keyfile.write(self.oram.key)
+        with open(stashfile_name, "wb") as stashfile:
+            pickle.dump(self.oram.stash, stashfile)
+        with open(positionfile_name, "wb") as positionfile:
+            pickle.dump(self.oram.position_map, positionfile)
+
+    @classmethod
+    def setup(cls, storename, host, user, rsa_key_path, port=22):
+        keyfile_name = "%s.key" % (storename)
+        stashfile_name = "%s.stash" % (storename)
+        positionfile_name = "%s.position" % (storename)
+
+        with open(keyfile_name, "rb") as keyfile:
+            key = keyfile.read()
+        with open(stashfile_name, "rb") as stashfile:
+            stash = pickle.load(stashfile)
+        with open(positionfile_name, "rb") as positionfile:
+            position_map = pickle.load(positionfile)
+
+        ssh = paramiko.SSHClient()
+        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        rsa_key = paramiko.RSAKey.from_private_key_file(rsa_key_path)
+
+        ssh.connect(host, port=port, username=user, pkey=rsa_key)
+        ssh.open_sftp()
+
+        oram = PathORAM(storename, stash, position_map, key=key,
+                        storage_type="sftp", concurrency_level=1, sshclient=ssh)
+
+        return KVORAM(oram)
